@@ -36,9 +36,11 @@ const send = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'applic
 async function discord(method, path, payload) {
   let r, t;
   for (let i = 0; i < 3; i++) {
+    const headers = { Authorization: 'Bot ' + token, 'User-Agent': 'DiscordBot (https://tarbes-rp.example, 1.0)' };
+    if (payload) headers['Content-Type'] = 'application/json'; // seulement s'il y a un corps à envoyer
     r = await fetch('https://discord.com/api/v10' + path, {
       method,
-      headers: { Authorization: 'Bot ' + token, 'Content-Type': 'application/json', 'User-Agent': 'DiscordBot (https://tarbes-rp.example, 1.0)' },
+      headers,
       body: payload ? JSON.stringify(payload) : undefined,
     });
     t = await r.text();
