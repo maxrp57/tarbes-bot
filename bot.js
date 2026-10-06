@@ -17,13 +17,16 @@ client.once('ready', () => {
 // ---- Giveaways : boutons "Je participe" / "Je ne participe pas" ----
 // Les participants sont enregistrés dans la feuille Google (via SITE_URL), pas ici : rien n'est perdu si Render redémarre.
 const SITE_URL = (process.env.SITE_URL || '').trim();
+console.log('SITE_URL définie :', SITE_URL.length > 0);
 async function site(payload) {
   if (!SITE_URL) throw new Error('SITE_URL manquant sur Render.');
   const r = await fetch(SITE_URL, {
     method: 'POST', headers: { 'Content-Type': 'text/plain' }, redirect: 'follow',
     body: JSON.stringify({ key: API_KEY, ...payload }), signal: AbortSignal.timeout(25000),
   });
-  return r.json();
+  const text = await r.text();
+  try { return JSON.parse(text); }
+  catch (e) { throw new Error('Réponse inattendue de Google (HTTP ' + r.status + ') : ' + text.replace(/\s+/g, ' ').slice(0, 160)); }
 }
 const pendingCount = new Map();
 function scheduleCount(message, count) { // met à jour le compteur sur le message (au plus toutes les ~4 s)
