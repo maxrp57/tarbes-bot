@@ -29,23 +29,13 @@ async function site(payload) {
   catch (e) { throw new Error('Réponse inattendue de Google (HTTP ' + r.status + ') : ' + text.replace(/\s+/g, ' ').slice(0, 160)); }
 }
 const pendingCount = new Map();
-function scheduleCount(message, count) { // met à jour le compteur sur le message (au plus toutes les ~4 s)
-  const cur = pendingCount.get(message.id);
-  if (cur) { cur.count = count; return; }
-  const item = { count };
-  item.timer = setTimeout(async () => {
+function scheduleCount(message) { // le site redessine le message avec le nouveau nombre (au plus toutes les ~4 s)
+  if (pendingCount.has(message.id)) return;
+  pendingCount.set(message.id, setTimeout(async () => {
     pendingCount.delete(message.id);
-    try {
-      const fresh = await message.fetch().catch(() => message);
-      if (!fresh.components || !fresh.components.length || !fresh.embeds[0]) return; // giveaway terminé
-      const emb = EmbedBuilder.from(fresh.embeds[0]);
-      const idx = (emb.data.fields || []).findIndex((f) => f.name.startsWith('👥'));
-      if (idx < 0) return;
-      emb.spliceFields(idx, 1, { name: '👥 Participants', value: String(item.count), inline: true });
-      await fresh.edit({ embeds: [emb] });
-    } catch (e) { console.error('Compteur non mis à jour :', e.message); }
-  }, 4000);
-  pendingCount.set(message.id, item);
+    try { await site({ action: 'gwRefresh', msgId: message.id }); }
+    catch (err) { console.error('Compteur non mis à jour :', err.message); }
+  }, 4000));
 }
 client.on('interactionCreate', async (i) => {
   if (!i.isButton() || !['gw:join', 'gw:leave'].includes(i.customId)) return;
@@ -57,7 +47,7 @@ client.on('interactionCreate', async (i) => {
       name: (i.member && i.member.displayName) || i.user.username, roles,
     });
     await i.editReply({ content: r.msg || 'Erreur.' });
-    if (r.ok && typeof r.count === 'number') scheduleCount(i.message, r.count);
+    if (r.ok && typeof r.count === 'number') scheduleCount(i.message);
   } catch (e) {
     console.error('Bouton giveaway :', e.message);
     try { await i.editReply({ content: 'Une erreur est survenue, réessaie dans un instant.' }); } catch (x) {}
