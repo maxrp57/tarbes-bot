@@ -1,3 +1,4 @@
+
 // Garde le bot Tarbes RP en ligne ET fait passer les actions de la page Admin vers Discord.
 // Variables Render : BOT_TOKEN (jeton du bot) et API_KEY (mot de passe partagé avec Google).
 const http = require('http');
@@ -96,6 +97,30 @@ async function discord(method, path, payload) {
   return { status: r.status, body: t };
 }
 
+// Envoie un MP à chaque personne, doucement (pour respecter les limites de Discord).
+async function dmAll(ids, text) {
+  for (const id of ids) {
+    try {
+      const ch = JSON.parse((await discord('POST', '/users/@me/channels', { recipient_id: id })).body);
+      if (ch.id) await discord('POST', '/channels/' + ch.id + '/messages', { content: text, allowed_mentions: { parse: [] } });
+    } catch (e) { console.error('MP échoué', id, e.message); }
+    await new Promise((o) => setTimeout(o, 500));
+  }
+}
+// Liste des membres qui ont un rôle (demande "Server Members Intent" activé sur le portail Discord).
+async function roleMembers(guildId, roleId) {
+  const out = []; let after = '0';
+  for (let i = 0; i < 10; i++) {
+    const r = await discord('GET', '/guilds/' + guildId + '/members?limit=1000&after=' + after);
+    if (r.status !== 200) { console.error('Liste des membres impossible (', r.status, ') :', String(r.body).slice(0, 120)); break; }
+    const page = JSON.parse(r.body);
+    page.forEach((m) => { if (m.user && !m.user.bot && (m.roles || []).includes(roleId)) out.push(m.user.id); });
+    if (page.length < 1000) break;
+    after = page[page.length - 1].user.id;
+  }
+  return out;
+}
+
 http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/notify') {
     let body = '';
@@ -103,19 +128,21 @@ http.createServer((req, res) => {
     req.on('end', () => {
       let b; try { b = JSON.parse(body); } catch (e) { return send(res, 400, { message: 'JSON invalide.' }); }
       if (!API_KEY || !same(b.key || '', API_KEY)) return send(res, 403, { message: 'Accès refusé (API_KEY).' });
-      const ids = (Array.isArray(b.ids) ? b.ids : []).map(String).filter((x) => /^\d{5,25}$/.test(x)).slice(0, 50);
+      const isId = (x) => /^\d{5,25}$/.test(String(x));
       const clean = (v, n) => String(v || '').replace(/[*_`~|>@\\]/g, '').trim().slice(0, n);
+      if (b.kind === 'giveaway') { // MP à tous les membres d'un rôle : qui a gagné
+        const winners = (Array.isArray(b.winners) ? b.winners : []).map(String).filter(isId).slice(0, 20);
+        if (!isId(b.guildId) || !isId(b.roleId) || !winners.length) return send(res, 400, { message: 'Paramètres invalides.' });
+        const text = (b.reroll ? '🔁 **Nouveau tirage**' : '🏆 **Giveaway terminé**') + '\nRécompense : **' + clean(b.prize, 100) + '**\nGagnant' + (winners.length > 1 ? 's' : '') + ' : ' +
+          winners.map((id) => '<@' + id + '>').join(', ') + '\n\n🎫 Si le gagnant ouvre un ticket, il faut lui donner la récompense.';
+        send(res, 202, { ok: true });
+        roleMembers(String(b.guildId), String(b.roleId)).then((ids) => dmAll(ids, text)).catch((e) => console.error('MP giveaway :', e.message));
+        return;
+      }
+      const ids = (Array.isArray(b.ids) ? b.ids : []).map(String).filter(isId).slice(0, 50);
       const text = '📝 **Nouvelle candidature déposée**\nRecrutement : **' + clean(b.title, 80) + '**\nCandidat : ' + clean(b.user, 60) + '\nVa sur le site Tarbes RP, page Admin, pour voter.';
       send(res, 202, { ok: true, count: ids.length }); // on répond tout de suite, les MP partent ensuite
-      (async () => {
-        for (const id of ids) {
-          try {
-            const ch = JSON.parse((await discord('POST', '/users/@me/channels', { recipient_id: id })).body);
-            if (ch.id) await discord('POST', '/channels/' + ch.id + '/messages', { content: text, allowed_mentions: { parse: [] } });
-          } catch (e) { console.error('MP échoué', id, e.message); }
-          await new Promise((o) => setTimeout(o, 500));
-        }
-      })();
+      dmAll(ids, text);
     });
     return;
   }
