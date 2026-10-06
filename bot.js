@@ -52,6 +52,28 @@ async function discord(method, path, payload) {
 }
 
 http.createServer((req, res) => {
+  if (req.method === 'POST' && req.url === '/notify') {
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 20000) req.destroy(); });
+    req.on('end', () => {
+      let b; try { b = JSON.parse(body); } catch (e) { return send(res, 400, { message: 'JSON invalide.' }); }
+      if (!API_KEY || !same(b.key || '', API_KEY)) return send(res, 403, { message: 'Accès refusé (API_KEY).' });
+      const ids = (Array.isArray(b.ids) ? b.ids : []).map(String).filter((x) => /^\d{5,25}$/.test(x)).slice(0, 50);
+      const clean = (v, n) => String(v || '').replace(/[*_`~|>@\\]/g, '').trim().slice(0, n);
+      const text = '📝 **Nouvelle candidature déposée**\nRecrutement : **' + clean(b.title, 80) + '**\nCandidat : ' + clean(b.user, 60) + '\nVa sur le site Tarbes RP, page Admin, pour voter.';
+      send(res, 202, { ok: true, count: ids.length }); // on répond tout de suite, les MP partent ensuite
+      (async () => {
+        for (const id of ids) {
+          try {
+            const ch = JSON.parse((await discord('POST', '/users/@me/channels', { recipient_id: id })).body);
+            if (ch.id) await discord('POST', '/channels/' + ch.id + '/messages', { content: text, allowed_mentions: { parse: [] } });
+          } catch (e) { console.error('MP échoué', id, e.message); }
+          await new Promise((o) => setTimeout(o, 500));
+        }
+      })();
+    });
+    return;
+  }
   if (req.method === 'POST' && req.url === '/api') {
     let body = '';
     req.on('data', (c) => { body += c; if (body.length > 20000) req.destroy(); });
