@@ -1,4 +1,3 @@
-
 // Garde le bot Tarbes RP en ligne ET fait passer les actions de la page Admin vers Discord.
 // Variables Render : BOT_TOKEN (jeton du bot) et API_KEY (mot de passe partagé avec Google).
 const http = require('http');
@@ -99,20 +98,26 @@ async function discord(method, path, payload) {
 
 // Envoie un MP à chaque personne, doucement (pour respecter les limites de Discord).
 async function dmAll(ids, text) {
+  let ok = 0, ko = 0;
   for (const id of ids) {
     try {
       const ch = JSON.parse((await discord('POST', '/users/@me/channels', { recipient_id: id })).body);
-      if (ch.id) await discord('POST', '/channels/' + ch.id + '/messages', { content: text, allowed_mentions: { parse: [] } });
-    } catch (e) { console.error('MP échoué', id, e.message); }
+      const m = ch.id ? await discord('POST', '/channels/' + ch.id + '/messages', { content: text, allowed_mentions: { parse: [] } }) : { status: 0 };
+      if (m.status >= 200 && m.status < 300) ok++; else { ko++; console.error('MP refusé', id, m.status, String(m.body).slice(0, 100)); }
+    } catch (e) { ko++; console.error('MP échoué', id, e.message); }
     await new Promise((o) => setTimeout(o, 500));
   }
+  console.log('MP envoyés :', ok, '| échecs :', ko);
 }
 // Liste des membres qui ont un rôle (demande "Server Members Intent" activé sur le portail Discord).
 async function roleMembers(guildId, roleId) {
   const out = []; let after = '0';
   for (let i = 0; i < 10; i++) {
     const r = await discord('GET', '/guilds/' + guildId + '/members?limit=1000&after=' + after);
-    if (r.status !== 200) { console.error('Liste des membres impossible (', r.status, ') :', String(r.body).slice(0, 120)); break; }
+    if (r.status !== 200) {
+      console.error('Liste des membres impossible (', r.status, ') :', String(r.body).slice(0, 120));
+      throw new Error('liste des membres refusée par Discord (' + r.status + '). Vérifie que « Server Members Intent » est activé sur le portail Discord (page Bot).');
+    }
     const page = JSON.parse(r.body);
     page.forEach((m) => { if (m.user && !m.user.bot && (m.roles || []).includes(roleId)) out.push(m.user.id); });
     if (page.length < 1000) break;
@@ -121,11 +126,11 @@ async function roleMembers(guildId, roleId) {
   return out;
 }
 
-http.createServer((req, res) => {
+const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/notify') {
     let body = '';
     req.on('data', (c) => { body += c; if (body.length > 20000) req.destroy(); });
-    req.on('end', () => {
+    req.on('end', async () => {
       let b; try { b = JSON.parse(body); } catch (e) { return send(res, 400, { message: 'JSON invalide.' }); }
       if (!API_KEY || !same(b.key || '', API_KEY)) return send(res, 403, { message: 'Accès refusé (API_KEY).' });
       const isId = (x) => /^\d{5,25}$/.test(String(x));
@@ -135,8 +140,12 @@ http.createServer((req, res) => {
         if (!isId(b.guildId) || !isId(b.roleId) || !winners.length) return send(res, 400, { message: 'Paramètres invalides.' });
         const text = (b.reroll ? '🔁 **Nouveau tirage**' : '🏆 **Giveaway terminé**') + '\nRécompense : **' + clean(b.prize, 100) + '**\nGagnant' + (winners.length > 1 ? 's' : '') + ' : ' +
           winners.map((id) => '<@' + id + '>').join(', ') + '\n\n🎫 Si le gagnant ouvre un ticket, il faut lui donner la récompense.';
-        send(res, 202, { ok: true });
-        roleMembers(String(b.guildId), String(b.roleId)).then((ids) => dmAll(ids, text)).catch((e) => console.error('MP giveaway :', e.message));
+        try {
+          const ids = await roleMembers(String(b.guildId), String(b.roleId));
+          console.log('MP giveaway : ' + ids.length + ' membre(s) avec le rôle');
+          send(res, 200, { ok: true, count: ids.length }); // on répond tout de suite, les MP partent ensuite
+          dmAll(ids, text);
+        } catch (e) { console.error('MP giveaway :', e.message); send(res, 500, { message: e.message }); }
         return;
       }
       const ids = (Array.isArray(b.ids) ? b.ids : []).map(String).filter(isId).slice(0, 50);
@@ -161,4 +170,6 @@ http.createServer((req, res) => {
     return;
   }
   res.end('ok'); // page pour le cron
-}).listen(process.env.PORT || 3000);
+});
+require('./rooms').attach(server, API_KEY); // séances en temps réel (chat, quiz, diapos)
+server.listen(process.env.PORT || 3000);
