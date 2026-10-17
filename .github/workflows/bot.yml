@@ -1,0 +1,52 @@
+name: Bot Tarbes RP
+
+on:
+  workflow_dispatch:
+
+# Un seul bot à la fois : si le site relance pendant qu'il tourne, la nouvelle demande attend.
+concurrency:
+  group: bot
+  cancel-in-progress: false
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      API_KEY: ${{ secrets.API_KEY }}
+      SITE_URL: ${{ secrets.SITE_URL }}
+      PORT: "3000"
+      MINUTES: "40"   # durée pendant laquelle le bot reste allumé
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --omit=dev
+
+      - name: Lancer le bot et son adresse publique
+        run: |
+          curl -sSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          ./cloudflared tunnel --no-autoupdate --url http://localhost:$PORT > tunnel.log 2>&1 &
+          node bot.js &
+          URL=""
+          for i in $(seq 1 40); do
+            URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' tunnel.log | grep -v '^https://api\.' | head -1 || true)
+            [ -n "$URL" ] && break
+            sleep 2
+          done
+          if [ -z "$URL" ]; then echo "Pas d'adresse de tunnel."; cat tunnel.log; exit 1; fi
+          sleep 5
+          echo "Adresse du bot envoyée au site :"
+          curl -sSL -m 60 -H 'Content-Type: text/plain' \
+            -d "{\"key\":\"$API_KEY\",\"action\":\"setBotUrl\",\"url\":\"$URL\"}" "$SITE_URL"
+          echo
+          sleep $((MINUTES * 60))
+
+      - name: Retirer l'adresse du site
+        if: always()
+        run: |
+          curl -sSL -m 60 -H 'Content-Type: text/plain' \
+            -d "{\"key\":\"$API_KEY\",\"action\":\"setBotUrl\",\"url\":\"\"}" "$SITE_URL" || true
